@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mental Health Sentiment Analyzer — WellScan AI</title>
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide icons (UMD build) -->
+    <script src="https://unpkg.com/lucide@latest/dist/lucide.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fc; }
+        .text-gradient { background-image: linear-gradient(to right, #6366f1, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .score-bar { height: 10px; border-radius: 9999px; transition: width 1s ease-in-out; }
+        .emotion-item:hover .emotion-bar { opacity: 1; }
+        .word-cloud-word { transition: all 0.3s ease; cursor: default; }
+        .word-cloud-word:hover { opacity: 0.7; transform: scale(1.05); }
+    </style>
+</head>
+<body class="min-h-screen flex items-start justify-center p-4 sm:p-8">
+
+    <div id="app" class="w-full max-w-4xl bg-white shadow-2xl rounded-xl overflow-hidden transform transition-all duration-300"></div>
+
+    <script type="module">
+        // --- App state ---
+        let currentPage = 'home'; // 'home' | 'measurement'
+        let analysisText = '';
+        let analysisResult = null;
+        let isLoading = false;
+        let message = { type: '', text: '' }; // types: '', 'error', 'success', 'info'
+        const APP_TITLE = 'WellScan AI';
+
+        // API config (leave empty to use mocked analysis in-browser)
+        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
+        const apiKey = ''; // set your key here if you want real calls
+        const apiUrl = apiKey ? `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}` : null;
+
+        // Response schema (kept for compatibility; not validated in mock)
+        const responseSchema = {/* kept in original shape if you plan to use the real API */};
+
+        // --- Helpers ---
+        const navigateTo = (page) => {
+            currentPage = page;
+            analysisResult = null;
+            message = { type: '', text: '' };
+            render();
+        };
+
+        const getColorClass = (label = '') => {
+            switch ((label || '').toString().toLowerCase()) {
+                case 'positive': return 'bg-green-500';
+                case 'neutral': return 'bg-blue-400';
+                case 'negative': return 'bg-red-500';
+                case 'anxiety':
+                case 'sadness':
+                case 'frustration': return 'bg-amber-500';
+                case 'joy':
+                case 'calm': return 'bg-green-500';
+                default: return 'bg-gray-400';
+            }
+        };
+
+        const setMessage = (type, text) => { message = { type, text }; render(); };
+
+        const renderMessage = () => {
+            if (!message.text) return '';
+            const color = message.type === 'error' ? 'bg-red-100 border-red-400 text-red-700' : message.type === 'info' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-green-100 border-green-400 text-green-700';
+            const icon = message.type === 'error' ? 'alert-triangle' : message.type === 'success' ? 'check-circle' : 'info';
+            return `<div class="p-4 mb-4 rounded-lg border ${color} flex items-center shadow-sm">
+                        <span data-lucide="${icon}" class="w-5 h-5 mr-3 flex-shrink-0"></span>
+                        <p class="font-medium text-sm">${escapeHtml(message.text)}</p>
+                    </div>`;
+        };
+
+        // Basic HTML-escape to avoid accidental injection when inserting user text into templates
+        const escapeHtml = (unsafe) => {
+            if (unsafe === null || unsafe === undefined) return '';
+            return String(unsafe)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        };
+
+        // --- Mock analysis (used when apiKey is not provided) ---
+        const mockAnalyze = (text) => {
+            // Lightweight heuristics for demo purposes only
+            const lower = text.toLowerCase();
+            const negativeWords = ['sad', 'depressed', 'hopeless', 'suicide', 'kill', 'anxious', 'anxiety', 'stress', 'stressed'];
+            const positiveWords = ['happy', 'joy', 'grateful', 'hope', 'excited', 'calm', 'relieved'];
+            let neg = 0, pos = 0;
+            negativeWords.forEach(w => { if (lower.includes(w)) neg += 1; });
+            positiveWords.forEach(w => { if (lower.includes(w)) pos += 1; });
+
+            const total = Math.max(1, pos + neg);
+            const posScore = Math.round((pos / total) * 100);
+            const negScore = Math.round((neg / total) * 100);
+            const neuScore = Math.max(0, 100 - posScore - negScore);
+
+            // Simple emotion strengths
+            const emotions = [];
+            if (neg > 0) emotions.push({ emotion: 'anxiety', strength: Math.min(90, neg * 25) });
+            if (pos > 0) emotions.push({ emotion: 'joy', strength: Math.min(90, pos * 25) });
+            if (neg === 0 && pos === 0) emotions.push({ emotion: 'neutral', strength: 70 });
+
+            const words = text.split(/\W+/).filter(Boolean).slice(0, 15)
+                .map((w, i) => ({ word: w.toLowerCase(), relevance: Math.max(10, 90 - i * 5) }));
+
+            const overall = posScore > negScore ? 'Positive' : negScore > posScore ? 'Negative' : 'Neutral';
+
+            return {
+                overallSentiment: overall,
+                mentalHealthSummary: overall === 'Negative' ? 'The text contains concerning negative language that may indicate distress. Consider reaching out to a professional if needed.' : overall === 'Positive' ? 'The text reflects a generally positive tone and resilience.' : 'The text appears neutral with mixed signals.',
+                sentimentScores: [
+                    { label: 'Positive', score: posScore },
+                    { label: 'Neutral', score: neuScore },
+                    { label: 'Negative', score: negScore }
+                ],
+                emotionCategories: emotions,
+                wordCloudData: words
+            };
+        };
+
+        // --- API call (real) with basic retry logic ---
+        const callRealApi = async (text) => {
+            if (!apiUrl) throw new Error('No API key provided');
+            const systemPrompt = `You are a specialized Mental Health Sentiment Analysis AI. Return JSON matching the expected schema.`;
+            const payload = {
+                contents: [{ parts: [{ text }]}],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: { responseMimeType: 'application/json', responseSchema }
+            };
+            const maxRetries = 2;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                const resp = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    // Expecting the model to return JSON as text in candidates[0].content.parts[0].text
+                    if (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0]) {
+                        const txt = json.candidates[0].content.parts[0].text;
+                        return JSON.parse(txt);
+                    }
+                    throw new Error('Unexpected API response structure');
+                }
+                // retry for rate limits
+                if (resp.status === 429 && attempt < maxRetries) await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+                else break;
+            }
+            throw new Error('API request failed');
+        };
+
+        // --- Main analysis entrypoint ---
+        const analyzeSentiment = async () => {
+            if (!analysisText || !analysisText.trim()) {
+                setMessage('error', 'Input field cannot be empty. Please enter text to analyze.');
+                const el = document.getElementById('analysis-input'); if (el) el.focus();
+                return;
+            }
+
+            isLoading = true; analysisResult = null; setMessage('info', 'Analysis in progress...'); render();
+
+            try {
+                let result = null;
+                if (apiUrl) {
+                    result = await callRealApi(analysisText.trim());
+                } else {
+                    // Use mock analysis when no API key is set (safe, offline demo)
+                    await new Promise(r => setTimeout(r, 700)); // small delay to simulate work
+                    result = mockAnalyze(analysisText.trim());
+                }
+                analysisResult = result;
+                setMessage('success', 'Analysis complete!');
+            } catch (err) {
+                console.error(err);
+                analysisResult = { error: 'Analysis failed. ' + (err.message || '') };
+                setMessage('error', analysisResult.error);
+            } finally {
+                isLoading = false;
+                render();
+            }
+        };
+
+        // --- Render pieces ---
+        const renderEthicalDisclaimer = () => `
+            <div class="p-4 bg-yellow-50 border-l-4 border-yellow-400 text-yellow-800 rounded-md mt-4 shadow-sm" role="alert">
+                <div class="flex items-center">
+                    <span data-lucide="shield-alert" class="w-5 h-5 mr-3 flex-shrink-0"></span>
+                    <p class="font-bold text-sm">Important Ethical Disclaimer</p>
+                </div>
+                <p class="mt-1 text-xs">This tool is for informational analysis only. It is <strong>NOT</strong> a diagnostic tool and cannot replace professional medical advice, diagnosis, or treatment.</p>
+            </div>
+        `;
+
+        const renderHeader = () => `
+            <header class="p-6 border-b border-gray-100 bg-white">
+                <div class="flex items-center justify-between">
+                    <h1 class="text-3xl font-extrabold text-gradient flex items-center">
+                        <span data-lucide="brain-circuit" class="w-6 h-6 mr-2 text-indigo-500"></span>
+                        ${escapeHtml(APP_TITLE)}
+                    </h1>
+                    <div class="flex gap-2">
+                        <button onclick="navigateTo('home')" class="text-sm font-medium text-indigo-600 hover:text-indigo-800 transition duration-150 p-2 rounded-lg hover:bg-indigo-50">
+                            <span data-lucide="home" class="w-4 h-4 inline-block mr-1"></span>Home
+                        </button>
+                        <button onclick="navigateTo('measurement')" class="text-sm font-medium text-indigo-600 hover:text-indigo-800 transition duration-150 p-2 rounded-lg hover:bg-indigo-50">
+                            <span data-lucide="activity" class="w-4 h-4 inline-block mr-1"></span>Analyze
+                        </button>
+                    </div>
+                </div>
+            </header>
+        `;
+
+        const renderHomePage = () => `
+            ${renderHeader()}
+            <main class="p-8 text-center">
+                <div class="space-y-6">
+                    <div class="flex justify-center">
+                        <span data-lucide="activity" class="w-16 h-16 text-indigo-500"></span>
+                    </div>
+                    <h2 class="text-4xl font-bold text-gray-800">Analyze the Pulse of Well-being</h2>
+                    <p class="text-lg text-gray-600 max-w-2xl mx-auto">This tool performs a nuanced sentiment and emotional analysis on text, tailored to mental health contexts.</p>
+                    <button onclick="navigateTo('measurement')" class="mt-6 px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full shadow-lg hover:bg-indigo-700 transition duration-300 transform hover:scale-105 flex items-center justify-center mx-auto">
+                        <span data-lucide="sparkles" class="w-5 h-5 mr-2"></span>Start Analysis Now
+                    </button>
+                    ${renderEthicalDisclaimer()}
+                </div>
+            </main>
+        `;
+
+        const renderMeasurementPage = () => `
+            ${renderHeader()}
+            <main class="p-6 sm:p-8">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">Sentiment Measurement</h2>
+                ${renderMessage()}
+
+                <div class="mb-8 p-6 bg-gray-50 rounded-xl shadow-md">
+                    <label for="analysis-input" class="block text-lg font-medium text-gray-700 mb-3">Enter Text or Topic Summary:</label>
+                    <textarea id="analysis-input" rows="6" class="w-full p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150" placeholder="Paste a social media post, a forum comment, or a detailed summary...">${escapeHtml(analysisText)}</textarea>
+                    <div class="flex items-center gap-3 mt-4">
+                        <button id="analyze-button" ${isLoading ? 'disabled' : ''} onclick="analyzeSentiment()" class="px-6 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed">
+                            <span data-lucide="search" class="w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}"></span>
+                            ${isLoading ? 'Analyzing...' : 'Run Sentiment Analysis'}
+                        </button>
+                        <button onclick="(function(){document.getElementById('analysis-input').value=''; analysisText=''; analysisResult=null; message={type:'',text:''}; render();})();" class="px-4 py-2 border rounded-lg">Clear</button>
+                    </div>
+                </div>
+
+                <div id="results-area" class="min-h-[200px]">
+                    ${isLoading ? renderLoadingState() : analysisResult ? renderResults(analysisResult) : renderInitialState()}
+                </div>
+            </main>
+        `;
+
+        const renderInitialState = () => `
+            <div class="text-center p-12 border-4 border-dashed border-gray-200 rounded-xl text-gray-500">
+                <span data-lucide="bar-chart-3" class="w-12 h-12 mx-auto mb-3"></span>
+                <p class="font-medium">Analysis results will appear here after you click 'Run Sentiment Analysis'.</p>
+                ${renderEthicalDisclaimer()}
+            </div>
+        `;
+
+        const renderLoadingState = () => `
+            <div class="text-center p-12 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-700">
+                <span data-lucide="loader-2" class="w-10 h-10 mx-auto mb-3 animate-spin"></span>
+                <p class="text-xl font-semibold">Processing Complex Sentiment Data...</p>
+                <p class="text-sm mt-2">The AI is performing emotional profiling and keyword extraction.</p>
+            </div>
+        `;
+
+        const renderSuggestedResources = () => `
+            <div class="mt-8 p-6 bg-red-50 border-t-4 border-red-500 rounded-xl shadow-lg">
+                <h3 class="text-xl font-bold text-red-700 mb-4 flex items-center"><span data-lucide="hand-heart" class="w-5 h-5 mr-2"></span>Immediate Support Resources</h3>
+                <p class="text-red-800 mb-3">The analysis indicated a dominant negative sentiment. Seek professional support if you or someone you know is in distress.</p>
+                <ul class="list-disc pl-5 text-red-800 space-y-2 text-sm">
+                    <li><strong>Crisis Hotline (example):</strong> Call your local emergency number if immediate danger is present.</li>
+                    <li><strong>General Support:</strong> Consult a local healthcare provider or licensed therapist.</li>
+                </ul>
+            </div>
+        `;
+
+        const renderResults = (result) => {
+            if (result.error) return `<div class="p-6 bg-red-100 border border-red-400 text-red-700 rounded-lg shadow-md"><h3 class="font-bold text-xl mb-2">Analysis Error</h3><p>${escapeHtml(result.error)}</p></div>`;
+
+            const primarySentiment = result.overallSentiment || 'Neutral';
+            const primaryBorder = getColorClass(primarySentiment).replace('bg', 'border');
+            const primaryText = getColorClass(primarySentiment).replace('bg', 'text');
+            const isNegative = (primarySentiment || '').toString().toLowerCase() === 'negative';
+
+            const sortedEmotions = (result.emotionCategories || []).slice().sort((a, b) => (b.strength || 0) - (a.strength || 0));
+            const highestEmotion = sortedEmotions.length ? sortedEmotions[0] : null;
+
+            return `
+                <div class="grid md:grid-cols-3 gap-6 mb-8">
+                    <div class="md:col-span-1 p-6 bg-white border-t-4 ${primaryBorder} rounded-xl shadow-lg">
+                        <span data-lucide="target" class="w-6 h-6 ${primaryText} mb-2"></span>
+                        <h3 class="text-lg font-bold text-gray-600">Overall Assessment</h3>
+                        <p class="text-3xl font-extrabold ${primaryText} mt-1">${escapeHtml(primarySentiment)}</p>
+                        ${highestEmotion ? `<p class="text-sm text-gray-500 mt-2">Dominant Emotion: <span class="font-semibold text-gray-700">${escapeHtml(highestEmotion.emotion)} (${Math.round(highestEmotion.strength)}%)</span></p>` : ''}
+                    </div>
+
+                    <div class="md:col-span-2 p-6 bg-white border-t-4 border-indigo-500 rounded-xl shadow-lg">
+                        <span data-lucide="message-square" class="w-6 h-6 text-indigo-500 mb-2"></span>
+                        <h3 class="text-lg font-bold text-gray-600">Mental Health Summary</h3>
+                        <p class="text-gray-700 italic mt-1">${escapeHtml(result.mentalHealthSummary || 'No specific summary was provided by the model.')}</p>
+                    </div>
+                </div>
+
+                ${isNegative ? renderSuggestedResources() : ''}
+
+                <div class="grid lg:grid-cols-2 gap-8 mt-8">
+                    <div class="p-6 bg-white rounded-xl shadow-lg">
+                        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><span data-lucide="bar-chart-2" class="w-5 h-5 mr-2 text-indigo-500"></span>General Sentiment Scores</h3>
+                        <div class="space-y-4">
+                            ${(result.sentimentScores || []).map(score => `
+                                <div>
+                                    <div class="flex justify-between text-sm font-medium text-gray-700 mb-1"><span>${escapeHtml(score.label)}</span><span>${Math.round(score.score)}%</span></div>
+                                    <div class="w-full bg-gray-200 score-bar"><div class="score-bar ${getColorClass(score.label)}" style="width: ${Math.max(0, Math.min(100, score.score))}%;"></div></div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="p-6 bg-white rounded-xl shadow-lg">
+                        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><span data-lucide="heart-handshake" class="w-5 h-5 mr-2 text-indigo-500"></span>Detected Emotional Tones</h3>
+                        <div class="space-y-3">
+                            ${(sortedEmotions || []).slice(0,5).map(emotion => `
+                                <div class="emotion-item">
+                                    <div class="flex justify-between text-sm font-medium text-gray-700 mb-1"><span class="capitalize">${escapeHtml(emotion.emotion)}</span><span>${Math.round(emotion.strength)}%</span></div>
+                                    <div class="w-full bg-gray-200 score-bar"><div class="score-bar emotion-bar ${getColorClass(emotion.emotion)}" style="width: ${Math.max(0, Math.min(100, emotion.strength))}%;"></div></div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+
+                ${renderEthicalDisclaimer()}
+            `;
+        };
+
+        // --- Main render ---
+        const appContainer = document.getElementById('app');
+        const render = () => {
+            // Keep analysisText synchronized with textarea when measurement page is active
+            if (currentPage === 'measurement') {
+                const el = document.getElementById('analysis-input');
+                if (el) analysisText = el.value;
+            }
+
+            let html = '';
+            if (currentPage === 'home') html = renderHomePage();
+            else html = renderMeasurementPage();
+
+            appContainer.innerHTML = html;
+            // initialize lucide icons
+            if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+
+            // attach input listener
+            if (currentPage === 'measurement') {
+                const input = document.getElementById('analysis-input');
+                if (input) input.addEventListener('input', (e) => { analysisText = e.target.value; });
+            }
+        };
+
+        // --- Init ---
+        window.navigateTo = navigateTo;
+        window.analyzeSentiment = analyzeSentiment;
+        render();
+
+    </script>
+</body>
+</html>
